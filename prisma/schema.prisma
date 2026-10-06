@@ -1,0 +1,880 @@
+// TRAVORA — multi-tenant operating system for travel agencies.
+//
+// Tenancy: every agency-owned row carries `agencyId`, and every service query
+// filters on the agencyId taken from the authenticated session (never from
+// request input). Child rows (rooms, items, ...) repeat agencyId so a single
+// indexed predicate is enough to scope them.
+//
+// Money is stored as whole Indian Rupees (Int). Calendar dates (trip days,
+// check-in/out) are @db.Date; clock times inside a day are "HH:mm" strings.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & tenancy
+// ---------------------------------------------------------------------------
+
+enum Role {
+  SUPER_ADMIN
+  AGENT
+}
+
+enum AgencyStatus {
+  ACTIVE
+  TRIAL
+  SUSPENDED
+}
+
+enum PlanCode {
+  STARTER
+  GROWTH
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+model Agency {
+  id           String       @id @default(cuid())
+  name         String
+  slug         String       @unique
+  ownerName    String
+  email        String
+  phone        String
+  city         String?
+  state        String?
+  country      String?      @default("India")
+  address      String?
+  gstNumber    String?
+  logoKey      String?
+  supportEmail String?
+  supportPhone String?
+  status       AgencyStatus @default(TRIAL)
+  timezone     String       @default("Asia/Kolkata")
+  // Monotonic counter for human trip codes (TRV-10001, TRV-10002, ...).
+  tripSeq      Int          @default(10000)
+  invoiceSeq   Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  users         User[]
+  subscription  Subscription?
+  guests        Guest[]
+  guestDocs     GuestDocument[]
+  trips         Trip[]
+  documents     Document[]
+  payments      Payment[]
+  invoices      Invoice[]
+  hotels        AgentHotel[]
+  rates         HotelRate[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  name               String
+  phone              String?
+  passwordHash       String
+  role               Role
+  agencyId           String?
+  agency             Agency?   @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  mustChangePassword Boolean   @default(false)
+  disabledAt         DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sessions      Session[]
+  notifications Notification[]
+
+  @@index([agencyId])
+  @@index([role])
+}
+
+model Session {
+  // HMAC(AUTH_SECRET, token) — the raw token only ever lives in the cookie.
+  id         String   @id
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model RateLimit {
+  key         String   @id
+  windowStart DateTime
+  count       Int
+}
+
+model SubscriptionPlan {
+  id              String         @id @default(cuid())
+  code            PlanCode       @unique
+  name            String
+  priceMonthly    Int
+  maxUsers        Int
+  maxTripsMonthly Int?
+  features        String[]
+  sortOrder       Int            @default(0)
+  subscriptions   Subscription[]
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  agencyId           String             @unique
+  agency             Agency             @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  planId             String
+  plan               SubscriptionPlan   @relation(fields: [planId], references: [id])
+  status             SubscriptionStatus @default(TRIALING)
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  trialEndsAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([planId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Guests
+// ---------------------------------------------------------------------------
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  UNDISCLOSED
+}
+
+enum IdType {
+  PASSPORT
+  AADHAAR
+  PAN
+  DRIVING_LICENCE
+  VOTER_ID
+  OTHER
+}
+
+model Guest {
+  id          String    @id @default(cuid())
+  agencyId    String
+  agency      Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  fullName    String
+  phone       String?
+  email       String?
+  whatsapp    String?
+  nationality String?
+  dateOfBirth DateTime? @db.Date
+  gender      Gender?
+  address     String?
+  idType      IdType?
+  idNumber    String?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  documents    GuestDocument[]
+  trips        TripGuest[]
+  primaryTrips Trip[]          @relation("PrimaryGuest")
+
+  @@index([agencyId, fullName])
+  @@index([agencyId, createdAt])
+  @@index([agencyId, phone])
+  @@index([agencyId, email])
+}
+
+model GuestDocument {
+  id           String   @id @default(cuid())
+  agencyId     String
+  agency       Agency   @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  guestId      String
+  guest        Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  kind         IdType
+  label        String?
+  fileName     String
+  storageKey   String   @unique
+  contentType  String
+  sizeBytes    Int
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  @@index([agencyId, guestId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog: destinations, hotels, rooms, rates (owned by the platform)
+// ---------------------------------------------------------------------------
+
+model Destination {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  region      String?
+  country     String   @default("India")
+  description String?
+  createdAt   DateTime @default(now())
+
+  hotels Hotel[]
+}
+
+enum HotelCategory {
+  THREE_STAR
+  FOUR_STAR
+  FIVE_STAR
+  LUXURY
+  BOUTIQUE
+}
+
+enum CatalogStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum MealPlan {
+  EP // room only
+  CP // breakfast
+  MAP // breakfast + dinner
+  AP // all meals
+}
+
+model Hotel {
+  id                 String        @id @default(cuid())
+  name               String
+  slug               String        @unique
+  category           HotelCategory
+  description        String?
+  destinationId      String?
+  destination        Destination?  @relation(fields: [destinationId], references: [id], onDelete: SetNull)
+  location           String
+  address            String?
+  latitude           Float?
+  longitude          Float?
+  phone              String?
+  email              String?
+  website            String?
+  // Public marketing images: storage keys served by /api/media/[...key].
+  images             String[]
+  amenities          String[]
+  checkInTime        String        @default("14:00")
+  checkOutTime       String        @default("11:00")
+  cancellationPolicy String?
+  notes              String?
+  status             CatalogStatus @default(ACTIVE)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  rooms      HotelRoom[]
+  agencies   AgentHotel[]
+  tripHotels TripHotel[]
+
+  @@index([destinationId])
+  @@index([category])
+  @@index([status])
+}
+
+model HotelRoom {
+  id          String        @id @default(cuid())
+  hotelId     String
+  hotel       Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  capacity    Int
+  bedConfig   String?
+  inventory   Int           @default(1)
+  // Platform rack rate. NEVER selected into agent-facing payloads.
+  baseRate    Int
+  mealPlans   MealPlan[]
+  amenities   String[]
+  images      String[]
+  status      CatalogStatus @default(ACTIVE)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  rates     HotelRate[]
+  tripRooms TripRoom[]
+
+  @@index([hotelId])
+}
+
+/// Agency-specific negotiated nightly rate for a room. Absent row → base rate.
+model HotelRate {
+  id        String    @id @default(cuid())
+  roomId    String
+  room      HotelRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  agencyId  String
+  agency    Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  rate      Int
+  updatedAt DateTime  @updatedAt
+  createdAt DateTime  @default(now())
+
+  @@unique([roomId, agencyId])
+  @@index([agencyId])
+}
+
+/// Which catalog hotels an agency may see and book.
+model AgentHotel {
+  id           String   @id @default(cuid())
+  agencyId     String
+  agency       Agency   @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  hotelId      String
+  hotel        Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  assignedById String?
+  createdAt    DateTime @default(now())
+
+  @@unique([agencyId, hotelId])
+  @@index([hotelId])
+}
+
+// ---------------------------------------------------------------------------
+// Trips — the central object
+// ---------------------------------------------------------------------------
+
+enum TripStatus {
+  DRAFT
+  PLANNING
+  READY
+  SENT
+  CONFIRMED
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum TravelerType {
+  ADULT
+  CHILD
+  INFANT
+}
+
+enum ConfirmationStatus {
+  PENDING
+  REQUESTED
+  CONFIRMED
+}
+
+enum TransportKind {
+  AIRPORT_TRANSFER
+  INTERCITY
+  LOCAL
+  CUSTOM
+}
+
+enum ActivityKind {
+  SIGHTSEEING
+  ACTIVITY
+  EXPERIENCE
+  MEAL
+  FREE_TIME
+  CUSTOM
+}
+
+enum ItineraryItemType {
+  FLIGHT
+  TRAIN
+  AIRPORT_ARRIVAL
+  AIRPORT_DEPARTURE
+  HOTEL_CHECK_IN
+  HOTEL_CHECK_OUT
+  TRANSPORT
+  SIGHTSEEING
+  ACTIVITY
+  MEAL
+  FREE_TIME
+  CUSTOM
+  NOTE
+}
+
+enum ItemSource {
+  MANUAL
+  TEMPLATE
+  GENERATED
+  HOTEL
+  TRANSPORT
+  ACTIVITY
+  AI_DRAFT
+}
+
+model Trip {
+  id             String     @id @default(cuid())
+  agencyId       String
+  agency         Agency     @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  code           String
+  title          String?
+  status         TripStatus @default(DRAFT)
+  primaryGuestId String?
+  primaryGuest   Guest?     @relation("PrimaryGuest", fields: [primaryGuestId], references: [id], onDelete: SetNull)
+  startDate      DateTime?  @db.Date
+  endDate        DateTime?  @db.Date
+  adults         Int        @default(1)
+  children       Int        @default(0)
+  infants        Int        @default(0)
+  notes          String?
+  // Selling price override; when null the trip total is the sum of its lines.
+  priceOverride  Int?
+  // Cached selling total (override ?? sum of lines); kept current by touch().
+  totalAmount    Int        @default(0)
+  currency       String     @default("INR")
+  // Last wizard step the agent reached (for "resume where you left off").
+  wizardStep     Int        @default(1)
+  // Secret for the public guest page (/trip/[token]); 32 random bytes.
+  shareToken     String?    @unique
+  shareEnabled   Boolean    @default(false)
+  // Version number the guest page currently shows (TripVersion.version).
+  publishedVersion Int?
+  // True when the trip changed after the last publish.
+  hasUnpublishedChanges Boolean @default(false)
+  sentAt         DateTime?
+  confirmedAt    DateTime?
+  cancelledAt    DateTime?
+  createdById    String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  guests       TripGuest[]
+  destinations TripDestination[]
+  hotels       TripHotel[]
+  rooms        TripRoom[]
+  transports   TripTransport[]
+  activities   TripActivity[]
+  days         ItineraryDay[]
+  items        ItineraryItem[]
+  versions     TripVersion[]
+  documents    Document[]
+  payments     Payment[]
+  invoices     Invoice[]
+  notesList    TripNote[]
+
+  @@unique([agencyId, code])
+  @@index([agencyId, status])
+  @@index([agencyId, startDate])
+  @@index([agencyId, endDate])
+  @@index([agencyId, createdAt])
+  @@index([primaryGuestId])
+  @@index([status, startDate])
+}
+
+model TripGuest {
+  id           String       @id @default(cuid())
+  agencyId     String
+  tripId       String
+  trip         Trip         @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  guestId      String
+  guest        Guest        @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  isPrimary    Boolean      @default(false)
+  travelerType TravelerType @default(ADULT)
+  createdAt    DateTime     @default(now())
+
+  @@unique([tripId, guestId])
+  @@index([agencyId, guestId])
+}
+
+model TripDestination {
+  id            String  @id @default(cuid())
+  agencyId      String
+  tripId        String
+  trip          Trip    @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  destinationId String?
+  name          String
+  position      Int
+  nights        Int?
+
+  @@index([tripId, position])
+  @@index([agencyId, name])
+}
+
+model TripHotel {
+  id                 String             @id @default(cuid())
+  agencyId           String
+  tripId             String
+  trip               Trip               @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  hotelId            String
+  hotel              Hotel              @relation(fields: [hotelId], references: [id])
+  checkIn            DateTime           @db.Date
+  checkOut           DateTime           @db.Date
+  confirmationStatus ConfirmationStatus @default(PENDING)
+  confirmationNumber String?
+  notes              String?
+  position           Int                @default(0)
+  createdAt          DateTime           @default(now())
+
+  rooms TripRoom[]
+
+  @@index([tripId])
+  @@index([agencyId, checkIn])
+  @@index([hotelId])
+}
+
+model TripRoom {
+  id          String    @id @default(cuid())
+  agencyId    String
+  tripId      String
+  trip        Trip      @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripHotelId String
+  tripHotel   TripHotel @relation(fields: [tripHotelId], references: [id], onDelete: Cascade)
+  roomId      String
+  room        HotelRoom @relation(fields: [roomId], references: [id])
+  // Snapshots at booking time so later catalog edits don't rewrite history.
+  roomName    String
+  nightlyRate Int
+  quantity    Int       @default(1)
+  guests      Int       @default(2)
+  mealPlan    MealPlan  @default(CP)
+  checkIn     DateTime  @db.Date
+  checkOut    DateTime  @db.Date
+  createdAt   DateTime  @default(now())
+
+  @@index([tripId])
+  @@index([tripHotelId])
+}
+
+model TripTransport {
+  id             String        @id @default(cuid())
+  agencyId       String
+  tripId         String
+  trip           Trip          @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  kind           TransportKind
+  date           DateTime      @db.Date
+  time           String?
+  pickup         String
+  dropoff        String
+  vehicle        String?
+  driverName     String?
+  driverPhone    String?
+  vehicleNumber  String?
+  notes          String?
+  price          Int           @default(0)
+  addToItinerary Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+
+  @@index([tripId])
+  @@index([agencyId, date])
+}
+
+model TripActivity {
+  id             String       @id @default(cuid())
+  agencyId       String
+  tripId         String
+  trip           Trip         @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  kind           ActivityKind
+  date           DateTime     @db.Date
+  time           String?
+  title          String
+  location       String?
+  description    String?
+  durationMins   Int?
+  notes          String?
+  price          Int          @default(0)
+  addToItinerary Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+
+  @@index([tripId])
+  @@index([agencyId, date])
+}
+
+model TripNote {
+  id         String   @id @default(cuid())
+  agencyId   String
+  tripId     String
+  trip       Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  body       String
+  authorId   String?
+  authorName String?
+  createdAt  DateTime @default(now())
+
+  @@index([tripId, createdAt])
+}
+
+model ItineraryDay {
+  id        String   @id @default(cuid())
+  agencyId  String
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  dayNumber Int
+  date      DateTime @db.Date
+  title     String?
+  summary   String?
+
+  items ItineraryItem[]
+
+  @@unique([tripId, dayNumber])
+  @@index([agencyId, date])
+}
+
+model ItineraryItem {
+  id           String            @id @default(cuid())
+  agencyId     String
+  tripId       String
+  trip         Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  dayId        String
+  day          ItineraryDay      @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  position     Int
+  time         String?
+  type         ItineraryItemType
+  title        String
+  description  String?
+  location     String?
+  durationMins Int?
+  notes        String?
+  source       ItemSource        @default(MANUAL)
+  // Id of the TripTransport / TripActivity / TripHotel this item mirrors.
+  sourceId     String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([dayId, position])
+  @@index([tripId])
+  @@index([sourceId])
+}
+
+/// Immutable snapshot of what the guest saw (or will see) for a trip.
+model TripVersion {
+  id          String   @id @default(cuid())
+  agencyId    String
+  tripId      String
+  trip        Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  version     Int
+  summary     String
+  snapshot    Json
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([tripId, version])
+}
+
+// ---------------------------------------------------------------------------
+// Documents & money
+// ---------------------------------------------------------------------------
+
+enum DocumentKind {
+  ITINERARY
+  HOTEL_VOUCHER
+  TRANSPORT_VOUCHER
+  INVOICE
+  PAYMENT_RECEIPT
+  GUEST_SUMMARY
+  TRIP_CONFIRMATION
+}
+
+model Document {
+  id            String       @id @default(cuid())
+  agencyId      String
+  agency        Agency       @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  tripId        String
+  trip          Trip         @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  kind          DocumentKind
+  title         String
+  number        String?
+  storageKey    String       @unique
+  sizeBytes     Int
+  visibleToGuest Boolean     @default(true)
+  // Optional subject (a TripHotel for vouchers, a Payment for receipts).
+  subjectId     String?
+  generatedById String?
+  sentAt        DateTime?
+  createdAt     DateTime     @default(now())
+
+  @@index([agencyId, createdAt])
+  @@index([tripId, kind])
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CARD
+  CHEQUE
+  RAZORPAY
+  OTHER
+}
+
+enum PaymentProvider {
+  MANUAL
+  RAZORPAY
+}
+
+model Payment {
+  id                String          @id @default(cuid())
+  agencyId          String
+  agency            Agency          @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  tripId            String
+  trip              Trip            @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  amount            Int
+  paidAt            DateTime        @db.Date
+  method            PaymentMethod
+  reference         String?
+  notes             String?
+  provider          PaymentProvider @default(MANUAL)
+  providerPaymentId String?         @unique
+  voidedAt          DateTime?
+  recordedById      String?
+  createdAt         DateTime        @default(now())
+
+  @@index([agencyId, paidAt])
+  @@index([tripId])
+}
+
+enum InvoiceStatus {
+  ISSUED
+  VOID
+}
+
+model Invoice {
+  id        String        @id @default(cuid())
+  agencyId  String
+  agency    Agency        @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  tripId    String
+  trip      Trip          @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  number    String
+  issuedAt  DateTime      @default(now())
+  dueDate   DateTime?     @db.Date
+  subtotal  Int
+  tax       Int           @default(0)
+  total     Int
+  lines     Json
+  status    InvoiceStatus @default(ISSUED)
+  createdAt DateTime      @default(now())
+
+  @@unique([agencyId, number])
+  @@index([tripId])
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+model ItineraryTemplate {
+  id          String        @id @default(cuid())
+  // null = platform template visible to every agency.
+  agencyId    String?
+  name        String
+  description String?
+  destination String
+  nights      Int
+  tags        String[]
+  status      CatalogStatus @default(ACTIVE)
+  createdById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  days TemplateDay[]
+
+  @@index([agencyId])
+  @@index([status])
+}
+
+model TemplateDay {
+  id         String            @id @default(cuid())
+  templateId String
+  template   ItineraryTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  dayNumber  Int
+  title      String?
+  summary    String?
+
+  items TemplateItem[]
+
+  @@unique([templateId, dayNumber])
+}
+
+model TemplateItem {
+  id           String            @id @default(cuid())
+  dayId        String
+  day          TemplateDay       @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  position     Int
+  time         String?
+  type         ItineraryItemType
+  title        String
+  description  String?
+  location     String?
+  durationMins Int?
+  notes        String?
+
+  @@index([dayId, position])
+}
+
+// ---------------------------------------------------------------------------
+// Messaging, notifications, audit
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agencyId  String?
+  agency    Agency?   @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String?
+  href      String?
+  // Prevents the same reminder being raised twice (e.g. "trip-tomorrow:<id>").
+  dedupeKey String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt, createdAt])
+}
+
+enum EmailStatus {
+  SENT
+  LOGGED
+  FAILED
+}
+
+model EmailLog {
+  id         String      @id @default(cuid())
+  agencyId   String?
+  tripId     String?
+  template   String
+  to         String
+  subject    String
+  status     EmailStatus
+  provider   String
+  providerId String?
+  error      String?
+  createdAt  DateTime    @default(now())
+
+  @@index([agencyId, createdAt])
+  @@index([tripId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  agencyId  String?
+  agency    Agency?  @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  userId    String?
+  userName  String?
+  action    String
+  entity    String
+  entityId  String
+  summary   String?
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+
+  @@index([agencyId, createdAt])
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
