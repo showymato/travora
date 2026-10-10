@@ -25,7 +25,7 @@ export function HotelCover({ name, image, className, rounded = true }: { name: s
   const a = 20 + ((h >> 3) % 25);
   const b = 35 + ((h >> 7) % 30);
   return (
-    <div className={cn("relative h-full w-full overflow-hidden", rounded && "rounded-lg", className)} aria-hidden>
+    <div className={cn("relative h-full w-full overflow-hidden dark:brightness-[0.55] dark:saturate-[0.8]", rounded && "rounded-lg", className)} aria-hidden>
       <svg viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" className="h-full w-full">
         <defs>
           <linearGradient id={`sky-${h}`} x1="0" y1="0" x2="0" y2="1">

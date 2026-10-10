@@ -2,7 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Check, ChevronLeft, CloudCheck, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Check, ChevronDown, ChevronLeft, CloudCheck, Loader2, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fmtRelative } from "@/lib/dates";
@@ -60,6 +61,8 @@ export function WizardFrame({
   title,
   description,
   summary,
+  mobileSummary,
+  attention = {},
   savedAt,
   children,
 }: {
@@ -70,9 +73,31 @@ export function WizardFrame({
   title: string;
   description?: ReactNode;
   summary?: ReactNode;
+  /** Collapsed summary for screens without the side panel. */
+  mobileSummary?: { label: ReactNode; body: ReactNode };
+  /** Steps needing attention → reason. */
+  attention?: Record<number, string>;
   savedAt: string | null;
   children: ReactNode;
 }) {
+  const router = useRouter();
+  const stateOf = (n: number) => {
+    if (n === step) return "current" as const;
+    const visited = n < Math.max(reached, step);
+    if (visited && attention[n]) return "attention" as const;
+    if (visited) return "done" as const;
+    return "upcoming" as const;
+  };
+  const enabled = (n: number) => Boolean(tripId) && n <= Math.max(reached, step);
+  const collapsible = mobileSummary ? (
+    <details className="group rounded-xl border bg-card">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-[13px] [&::-webkit-details-marker]:hidden">
+        {mobileSummary.label}
+        <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="border-t px-4 py-3">{mobileSummary.body}</div>
+    </details>
+  ) : null;
   return (
     <div className="animate-fade-in">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -82,48 +107,75 @@ export function WizardFrame({
         <SaveStatus state="idle" savedAt={savedAt} />
       </div>
 
-      {/* Mobile progress */}
-      <div className="mb-6 lg:hidden">
-        <div className="flex items-baseline justify-between text-[12.5px]">
-          <span className="font-medium">
-            Step {String(step).padStart(2, "0")} · {STEPS[step - 1]}
-          </span>
-          <span className="text-muted-foreground">{step} of 10</span>
+      {/* Compact progress + step selector below lg */}
+      <div className="mb-5 lg:hidden">
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="wizard-step" className="sr-only">
+            Go to step
+          </label>
+          <select
+            id="wizard-step"
+            value={step}
+            onChange={(e) => router.push(stepHref(tripId, Number(e.target.value)))}
+            disabled={!tripId}
+            className="h-9 min-w-0 flex-1 rounded-lg border bg-card px-3 text-[13.5px] font-medium dark:bg-input/30"
+          >
+            {STEPS.map((label, i) => {
+              const n = i + 1;
+              const st = stateOf(n);
+              return (
+                <option key={label} value={n} disabled={!enabled(n)}>
+                  {`${String(n).padStart(2, "0")} · ${label}${st === "done" ? " ✓" : st === "attention" ? " — needs attention" : ""}`}
+                </option>
+              );
+            })}
+          </select>
+          <span className="shrink-0 text-[12.5px] text-muted-foreground tabular">{step} of 10</span>
         </div>
-        <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={1} aria-valuemax={10} aria-valuenow={step} aria-label="Trip setup progress">
-          <div className="h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${step * 10}%` }} />
+        <div className="mt-2.5 flex gap-1" role="progressbar" aria-valuemin={1} aria-valuemax={10} aria-valuenow={step} aria-label="Trip setup progress">
+          {STEPS.map((label, i) => {
+            const st = stateOf(i + 1);
+            return <span key={label} className={cn("h-1 flex-1 rounded-full", st === "current" ? "bg-primary" : st === "attention" ? "bg-warn" : st === "done" ? "bg-primary/45" : "bg-muted")} />;
+          })}
         </div>
+        {collapsible ? <div className="mt-4">{collapsible}</div> : null}
       </div>
 
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[200px_minmax(0,1fr)] xl:grid-cols-[200px_minmax(0,1fr)_280px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[180px_minmax(0,1fr)] xl:grid-cols-[180px_minmax(0,1fr)_272px] xl:gap-7">
         <nav aria-label="Trip setup steps" className="hidden lg:block">
           <ol className="sticky top-20 space-y-0.5">
             {STEPS.map((label, i) => {
               const n = i + 1;
-              const done = n < step || n <= reached - 1;
-              const current = n === step;
-              const enabled = Boolean(tripId) && n <= Math.max(reached, step);
+              const st = stateOf(n);
+              const reason = st === "attention" ? attention[n] : undefined;
               const inner = (
                 <>
                   <span
                     className={cn(
-                      "flex size-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold tabular",
-                      current ? "border-primary bg-primary text-primary-foreground" : done ? "border-primary/30 bg-secondary text-primary" : "bg-card text-muted-foreground",
+                      "flex size-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold tabular transition-colors",
+                      st === "current" && "border-primary bg-primary text-primary-foreground",
+                      st === "done" && "border-primary/30 bg-primary/10 text-primary",
+                      st === "attention" && "border-warn/50 bg-warn-soft text-warn",
+                      st === "upcoming" && "bg-card text-muted-foreground",
                     )}
                   >
-                    {done && !current ? <Check className="size-3.5" aria-hidden /> : String(n).padStart(2, "0")}
+                    {st === "done" ? <Check className="size-3.5" aria-hidden /> : st === "attention" ? <TriangleAlert className="size-3" aria-hidden /> : String(n).padStart(2, "0")}
                   </span>
-                  <span className={cn(current ? "font-semibold text-foreground" : done ? "text-foreground/80" : "text-muted-foreground")}>{label}</span>
+                  <span className="min-w-0">
+                    <span className={cn("block", st === "current" ? "font-semibold text-foreground" : st === "upcoming" ? "text-muted-foreground" : "text-foreground/85")}>{label}</span>
+                    {reason ? <span className="block truncate text-[11.5px] leading-tight text-warn">{reason}</span> : null}
+                  </span>
+                  <span className="sr-only">{st === "done" ? " (completed)" : st === "attention" ? ` (needs attention: ${reason})` : st === "current" ? " (current step)" : ""}</span>
                 </>
               );
               return (
                 <li key={label}>
-                  {enabled && !current ? (
-                    <Link href={stepHref(tripId, n)} className="flex items-center gap-3 rounded-lg px-2 py-1.5 text-[13.5px] transition-colors hover:bg-muted">
+                  {enabled(n) && st !== "current" ? (
+                    <Link href={stepHref(tripId, n)} title={reason} className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13.5px] transition-colors hover:bg-muted">
                       {inner}
                     </Link>
                   ) : (
-                    <span aria-current={current ? "step" : undefined} className={cn("flex items-center gap-3 rounded-lg px-2 py-1.5 text-[13.5px]", current && "bg-accent")}>
+                    <span aria-current={st === "current" ? "step" : undefined} className={cn("flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13.5px]", st === "current" && "bg-primary/10 ring-1 ring-primary/20")}>
                       {inner}
                     </span>
                   )}
@@ -134,11 +186,12 @@ export function WizardFrame({
         </nav>
 
         <section className="min-w-0" aria-labelledby="step-title">
-          <p className="text-[12.5px] font-medium tracking-wide text-muted-foreground">STEP {String(step).padStart(2, "0")}</p>
-          <h1 id="step-title" className="mt-1 text-[26px] font-semibold tracking-[-0.02em]">
+          {collapsible ? <div className="mb-5 hidden lg:block xl:hidden">{collapsible}</div> : null}
+          <p className="text-[12px] font-medium tracking-[0.06em] text-muted-foreground">STEP {String(step).padStart(2, "0")} / 10</p>
+          <h1 id="step-title" className="mt-1 text-[24px] font-semibold tracking-[-0.02em] sm:text-[26px]">
             {title}
           </h1>
-          {description ? <p className="mt-1 text-[14.5px] text-muted-foreground">{description}</p> : null}
+          {description ? <p className="mt-1 max-w-2xl text-[14px] text-muted-foreground">{description}</p> : null}
           <div className="mt-6">{children}</div>
         </section>
 

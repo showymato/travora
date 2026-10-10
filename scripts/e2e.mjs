@@ -206,27 +206,42 @@ for (const place of ["Srinagar", "Gulmarg", "Pahalgam"]) {
   await check(`Adds destination ${place}`, async () => {
     await page.getByLabel(/^Destination$/).fill(place);
     await page.getByLabel(/^Destination$/).press("Enter");
-    await page.getByLabel(`Nights in ${place}`).waitFor();
+    await page.getByLabel(`Nights in ${place}`, { exact: true }).waitFor();
   });
 }
 
-await check(`Selects ${HOTEL} for Srinagar`, async () => {
+await check(`Finds ${HOTEL} in Srinagar with filters and opens its details`, async () => {
   await page.getByRole("button", { name: "Continue" }).click();
   await page.waitForURL(/step=4/);
   await settle();
-  await page.getByRole("tab", { name: /Srinagar/ }).click();
-  await page.getByRole("combobox", { name: "Destination filter" }).click();
-  await page.getByRole("option", { name: "All destinations" }).click();
-  await page.getByRole("button", { name: `Add ${HOTEL} for Srinagar` }).click();
-  await toast(`${HOTEL} added`);
+  // Srinagar is the first unplanned destination, so it is selected already.
+  await page.getByRole("heading", { name: "Find the perfect stay in Srinagar" }).waitFor();
+  await page.getByLabel("Search hotels").fill(HOTEL);
+  await page.getByRole("button", { name: /^Price/ }).click();
+  await page.getByLabel("Max price per night").fill("9000");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Remove filter Up to ₹9,000/night" }).waitFor();
+  await page.getByRole("button", { name: `Details for ${HOTEL}` }).click();
+  const sheet = page.getByRole("dialog");
+  await sheet.getByRole("heading", { name: "Choose rooms" }).waitFor();
+  await sheet.getByText("₹7,200").first().waitFor(); // agency rate, not the ₹8,000 base rate
+  expect(!(await sheet.getByText("₹8,000").count()), "base rate leaked to the agent");
 });
 
-await check("Selects the Deluxe room at the agency rate", async () => {
-  await page.getByRole("button", { name: "Continue to rooms" }).click();
-  await page.waitForURL(/step=5/);
-  await page.getByRole("button", { name: "Use suggestion" }).click();
-  await toast("Added");
-  await page.getByText("₹7,200 × 2 × 2N").or(page.getByText("₹7,200 × 1 × 2N")).first().waitFor();
+await check("Selects the hotel with 2 Deluxe rooms at the agency rate", async () => {
+  const sheet = page.getByRole("dialog");
+  const more = sheet.getByRole("button", { name: "More Deluxe rooms" });
+  const qty = async () => Number(await sheet.getByRole("group", { name: "Number of Deluxe rooms" }).locator("span").innerText());
+  while ((await qty()) < 2) await more.click();
+  await sheet.getByText("Deluxe — 2 rooms × 2 nights × ₹7,200").waitFor();
+  await sheet.getByRole("button", { name: "Select hotel" }).click();
+  await toast(`${HOTEL} added for Srinagar`);
+  await sheet.waitFor({ state: "hidden" });
+  const rooms = await db.tripRoom.findMany({ where: { tripId } });
+  expect(rooms.length === 1 && rooms[0].quantity === 2 && rooms[0].nightlyRate === 7200, "rooms not saved at the agency rate");
+  expect((await db.tripHotel.count({ where: { tripId } })) === 1, "duplicate stay");
+  await page.goto(`${base}/app/trips/${tripId}/plan?step=5`);
+  await page.getByText("₹7,200 × 2 × 2N").first().waitFor();
 });
 
 await check("Adds transport (airport pickup)", async () => {

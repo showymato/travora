@@ -17,7 +17,7 @@ await db.$disconnect();
 
 const sets = {
   none: ["/", "/login", `/trip/${shared.shareToken}`],
-  agent: ["/app", "/app/trips", "/app/trips/new", `/app/trips/${trip.id}`, `/app/trips/${trip.id}?tab=itinerary`, `/app/trips/${trip.id}?tab=documents`, `/app/trips/${planning.id}/plan?step=3`, `/app/trips/${planning.id}/plan?step=4`, `/app/trips/${planning.id}/plan?step=9`, `/app/guests`, `/app/guests/${guest.id}`, "/app/calendar", "/app/payments", "/app/reports"],
+  agent: ["/app", "/app/trips", "/app/trips/new", `/app/trips/${trip.id}`, `/app/trips/${trip.id}?tab=itinerary`, `/app/trips/${trip.id}?tab=documents`, `/app/trips/${planning.id}/plan?step=3`, `/app/trips/${planning.id}/plan?step=4`, `/app/trips/${planning.id}/plan?step=8`, `/app/trips/${planning.id}/plan?step=9`, `/app/guests`, `/app/guests/${guest.id}`, "/app/calendar", "/app/payments", "/app/reports"],
   admin: ["/admin", "/admin/agents", "/admin/agents/new", `/admin/agents/${abc.id}/hotels`, `/admin/hotels/${hotel.id}?tab=rates`, "/admin/templates/new", "/admin/settings"],
 };
 

@@ -8,6 +8,7 @@ import { tripDatesSchema, tripDestinationsSchema, tripTravelersSchema } from "@/
 import { addDays, diffDays, eachDay, toDate, toISO } from "@/lib/dates";
 import { TRIP_STATUS_LABEL, TRIP_TRANSITIONS, type TripStatusValue } from "@/lib/labels";
 import { ensureDestination } from "../hotels";
+import { allocateNights } from "@/lib/plan";
 import { priceLines, tripTotals } from "@/lib/pricing";
 import { notifyAgency } from "../notifications";
 
@@ -170,24 +171,15 @@ async function shiftTrip(tx: Tx, tripId: string, days: number) {
 }
 
 /** Split nights across destinations: explicit values first, the rest evenly. */
-export function allocateNights(total: number, explicit: (number | null)[]) {
-  const fixed = explicit.reduce<number>((s, n) => s + (n ?? 0), 0);
-  const open = explicit.filter((n) => n === null).length;
-  const rest = Math.max(0, total - fixed);
-  let extra = open ? rest % open : 0;
-  return explicit.map((n) => {
-    if (n !== null) return n;
-    const v = Math.floor(rest / open) + (extra > 0 ? 1 : 0);
-    if (extra > 0) extra--;
-    return v;
-  });
-}
+export { allocateNights } from "@/lib/plan";
 
 export async function setDestinations(actor: Actor | null, tripId: string, raw: unknown) {
   guard(actor);
   const input = tripDestinationsSchema.parse(raw);
   const trip = await ownTrip(actor.agencyId, tripId);
   const nights = trip.startDate && trip.endDate ? diffDays(toISO(trip.startDate)!, toISO(trip.endDate)!) : 0;
+  const fixed = input.destinations.reduce((sum, d) => sum + (d.nights ?? 0), 0);
+  if (nights && fixed > nights) throw new AppError("VALIDATION_ERROR", `These destinations add up to ${fixed} nights, but the trip has ${nights}. Reduce some nights or change the trip dates.`);
   const allocated = allocateNights(
     nights,
     input.destinations.map((d) => d.nights),

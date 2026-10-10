@@ -215,6 +215,33 @@ export const stayRoomSchema = z
   .refine((v) => v.checkOut > v.checkIn, { message: "Check-out must be after check-in.", path: ["checkOut"] });
 export type StayRoomInput = z.infer<typeof stayRoomSchema>;
 
+/**
+ * Choose a hotel and its exact room selection for one stay in a single step.
+ * Prices are never accepted from the client: the server recomputes them from
+ * the agency's authorised rates.
+ */
+export const stayPlanSchema = z
+  .object({
+    stayId: z.string().min(1).nullable(),
+    hotelId: z.string().min(1, "Choose a hotel."),
+    checkIn: isoDate,
+    checkOut: isoDate,
+    rooms: z
+      .array(
+        z.object({
+          roomId: z.string().min(1),
+          quantity: z.number().int().min(1, "At least 1 room.").max(50),
+          guests: z.number().int().min(1, "At least 1 guest.").max(100),
+          mealPlan: z.enum(MEAL_PLANS),
+        }),
+      )
+      .min(1, "Choose at least one room.")
+      .max(10, "Up to 10 room types per stay."),
+  })
+  .refine((v) => v.checkOut > v.checkIn, { message: "Check-out must be after check-in.", path: ["checkOut"] })
+  .refine((v) => new Set(v.rooms.map((r) => `${r.roomId}:${r.mealPlan}`)).size === v.rooms.length, { message: "Each room type and meal plan can only be listed once.", path: ["rooms"] });
+export type StayPlanInput = z.infer<typeof stayPlanSchema>;
+
 export const stayUpdateSchema = z
   .object({
     checkIn: isoDate,

@@ -16,7 +16,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDown, ArrowUp, Copy, GripVertical, Link2, MoreHorizontal, Pencil, Plus, StickyNote, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, BedDouble, Copy, GripVertical, Link2, MoreHorizontal, Pencil, Plus, StickyNote, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { fmtDow, fmtDuration, fmtTime } from "@/lib/dates";
+import { fmtDow, fmtDuration, fmtTime, toISO } from "@/lib/dates";
 import { ITEM_TYPE_LABEL, type ItemTypeValue } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 import type { ItineraryItemInput } from "@/lib/schemas";
@@ -57,7 +57,7 @@ function toInput(i: BuilderItem): ItineraryItemInput {
  * (pointer or keyboard), or moved with the menu. Every change persists
  * immediately; reorders are optimistic and roll back on failure.
  */
-export function ItineraryBuilder({ tripId, days: initialDays, readOnly = false }: { tripId: string; days: BuilderDay[]; readOnly?: boolean }) {
+export function ItineraryBuilder({ tripId, days: initialDays, readOnly = false, nightStay }: { tripId: string; days: BuilderDay[]; readOnly?: boolean; /** ISO date → hotel staying that night. */ nightStay?: Record<string, string> }) {
   const router = useRouter();
   const dndId = useId();
   const [days, setDays] = useState(initialDays);
@@ -151,7 +151,7 @@ export function ItineraryBuilder({ tripId, days: initialDays, readOnly = false }
     <DndContext id={dndId} sensors={sensors} collisionDetection={closestCorners} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => snapshot && setDays(snapshot)}>
       <ol className="space-y-4">
         {days.map((day) => (
-          <DayColumn key={day.id} day={day} days={days} readOnly={readOnly} onMove={move} justAdded={justAdded} onAdded={(title) => setJustAdded(title)} />
+          <DayColumn key={day.id} day={day} days={days} readOnly={readOnly} onMove={move} justAdded={justAdded} onAdded={(title) => setJustAdded(title)} stay={nightStay?.[toISO(day.date) ?? ""]} />
         ))}
       </ol>
       <DragOverlay dropAnimation={null}>{activeItem ? <ItemRow item={activeItem} overlay /> : null}</DragOverlay>
@@ -166,7 +166,9 @@ function DayColumn({
   onMove,
   justAdded,
   onAdded,
+  stay,
 }: {
+  stay?: string;
   day: BuilderDay;
   days: BuilderDay[];
   readOnly: boolean;
@@ -177,6 +179,7 @@ function DayColumn({
   const router = useRouter();
   const { setNodeRef, isOver } = useDroppable({ id: day.id });
   const [editDay, setEditDay] = useState(false);
+  const gaps = day.items.filter((i) => i.notes && /^(Add flight|Transport not)/.test(i.notes)).length;
 
   const add = async (v: ItineraryItemInput) => {
     const res = await addItemAction(day.id, v);
@@ -205,6 +208,20 @@ function DayColumn({
             {fmtDow(day.date)}
             {day.summary ? ` · ${day.summary}` : ""}
           </p>
+          {stay || gaps ? (
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12px]">
+              {stay ? (
+                <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
+                  <BedDouble className="size-3 shrink-0" aria-hidden /> <span className="truncate">Night at {stay}</span>
+                </span>
+              ) : null}
+              {gaps ? (
+                <span className="inline-flex items-center gap-1 text-warn">
+                  <span className="size-1.5 rounded-full bg-warn" aria-hidden /> {gaps} to complete
+                </span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
         {!readOnly ? (
           <div className="flex shrink-0 items-center gap-1">

@@ -263,6 +263,7 @@ export type AgentRoom = {
   bedConfig: string | null;
   mealPlans: MealPlan[];
   amenities: string[];
+  images: string[];
   rate: number;
 };
 
@@ -281,6 +282,8 @@ export type AgentHotel = {
   checkOutTime: string;
   cancellationPolicy: string | null;
   phone: string | null;
+  email: string | null;
+  website: string | null;
   rooms: AgentRoom[];
   fromRate: number | null;
 };
@@ -307,6 +310,8 @@ export async function listAgentHotels(actor: Actor | null, opts: { hotelId?: str
       checkOutTime: true,
       cancellationPolicy: true,
       phone: true,
+      email: true,
+      website: true,
       destinationId: true,
       destination: { select: { name: true } },
       rooms: {
@@ -320,6 +325,7 @@ export async function listAgentHotels(actor: Actor | null, opts: { hotelId?: str
           bedConfig: true,
           mealPlans: true,
           amenities: true,
+          images: true,
           baseRate: true,
           rates: { where: { agencyId: actor.agencyId }, select: { rate: true } },
         },
@@ -347,10 +353,10 @@ export async function getAgentHotel(actor: Actor | null, hotelId: string) {
 export async function effectiveRate(agencyId: string, roomId: string, tx: Prisma.TransactionClient | typeof db = db) {
   const room = await tx.hotelRoom.findFirst({
     where: { id: roomId, hotel: { agencies: { some: { agencyId } } } },
-    select: { id: true, name: true, hotelId: true, baseRate: true, status: true, mealPlans: true, rates: { where: { agencyId }, select: { rate: true } } },
+    select: { id: true, name: true, hotelId: true, baseRate: true, status: true, capacity: true, mealPlans: true, rates: { where: { agencyId }, select: { rate: true } } },
   });
   if (!room) throw new AppError("FORBIDDEN", "That room isn't available to your agency.");
-  return { roomId: room.id, name: room.name, hotelId: room.hotelId, rate: room.rates[0]?.rate ?? room.baseRate, mealPlans: room.mealPlans, status: room.status };
+  return { roomId: room.id, name: room.name, hotelId: room.hotelId, rate: room.rates[0]?.rate ?? room.baseRate, capacity: room.capacity, mealPlans: room.mealPlans, status: room.status };
 }
 
 export async function hotelActivity(actor: Actor | null, hotelId: string, take = 50) {

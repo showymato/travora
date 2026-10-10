@@ -6,11 +6,38 @@ export function stepHref(tripId: string | null, step: number) {
   return tripId ? `/app/trips/${tripId}/plan?step=${step}` : "/app/trips/new";
 }
 
-export type PlanSegment = { name: string; destinationId: string | null; from: string; to: string };
+/**
+ * Split a trip's nights across destinations. Explicit night counts are kept;
+ * the rest is shared evenly between destinations left on "auto" (null).
+ */
+export function allocateNights(total: number, explicit: (number | null)[]) {
+  const fixed = explicit.reduce<number>((s, n) => s + (n ?? 0), 0);
+  const open = explicit.filter((n) => n === null).length;
+  const rest = Math.max(0, total - fixed);
+  let extra = open ? rest % open : 0;
+  return explicit.map((n) => {
+    if (n !== null) return n;
+    const v = Math.floor(rest / open) + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra--;
+    return v;
+  });
+}
+
+/** Consecutive date ranges for a list of night counts. */
+export function toRanges(start: string, nights: number[]) {
+  const out: { from: string; to: string }[] = [];
+  for (const n of nights) {
+    const from = out.length ? out[out.length - 1].to : start;
+    out.push({ from, to: addDays(from, n) });
+  }
+  return out;
+}
+
+export type PlanSegment = { name: string; destinationId: string | null; from: string; to: string; whole?: boolean };
 
 /** Destination segments from the trip's destination plan (falls back to the whole trip). */
 export function segmentsFor(start: string, end: string, dests: { name: string; destinationId: string | null; nights: number | null }[]): PlanSegment[] {
-  if (!dests.length) return [{ name: "Whole trip", destinationId: null, from: start, to: end }];
+  if (!dests.length) return [{ name: "Whole trip", destinationId: null, from: start, to: end, whole: true }];
   let cursor = start;
   return dests.map((d, i) => {
     const to = i === dests.length - 1 ? end : addDays(cursor, d.nights ?? 0);

@@ -5,7 +5,7 @@ import { getTrip } from "@/server/trips/queries";
 import { listAgentHotels, listDestinations } from "@/server/hotels";
 import { listTemplatesForAgent } from "@/server/templates";
 import { readinessIssues, guestTripUrl } from "@/server/trips/publish";
-import { reviewWarnings } from "@/server/trips/checks";
+import { reviewWarnings, stepAttention } from "@/server/trips/checks";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/app/states";
 import { WizardFrame } from "@/components/trips/wizard/frame";
@@ -17,8 +17,9 @@ import { HotelsStep } from "@/components/trips/wizard/step-hotels";
 import { RoomsStep } from "@/components/trips/wizard/step-rooms";
 import { ActivitiesStep, ItineraryStep, TransportStep } from "@/components/trips/wizard/step-lines";
 import { ReviewStep, SendStep } from "@/components/trips/wizard/step-review";
-import { TripSummaryCard } from "@/components/trips/trip-summary";
+import { TripSummaryBody, TripSummaryCard, TripSummaryLabel } from "@/components/trips/trip-summary";
 import { nightsBetween, toISO } from "@/lib/dates";
+import { roomLineAmount } from "@/lib/pricing";
 
 export const metadata: Metadata = { title: "Plan trip" };
 
@@ -26,8 +27,8 @@ const COPY: Record<number, [string, string]> = {
   1: ["Who's travelling?", "Select the primary guest and everyone travelling with them."],
   2: ["When are they travelling?", "Arrival and departure dates. Nights and days are calculated for you."],
   3: ["Where are they going?", "Add destinations in the order they'll visit. Nights split automatically — adjust if needed."],
-  4: ["Where will they stay?", "Only hotels assigned to your agency are shown, at your agency's rates."],
-  5: ["Choose rooms", "Room types, meal plans and dates for each hotel. Dates come from the stay — override per room if needed."],
+  4: ["Where will they stay?", "Pick a hotel and rooms for each destination. Only hotels assigned to your agency are shown, at your agency's rates."],
+  5: ["Fine-tune rooms", "Rooms chosen with each hotel appear here. Adjust meal plans, split dates per room or record hotel confirmations."],
   6: ["How will they get around?", "Airport transfers, intercity drives and local cars. Suggestions come from your hotels."],
   7: ["What will they do?", "Sightseeing, experiences and meals — each one lands in the itinerary."],
   8: ["Build the itinerary", "The heart of the trip: a day-by-day timeline you can edit, reorder and send."],
@@ -39,7 +40,7 @@ export default async function PlanPage({ params, searchParams }: PageProps<"/app
   const actor = await requireAgentPage();
   const { id } = await params;
   const sp = await searchParams;
-  const { trip, lines, computed, total } = await getTrip(actor, id);
+  const { trip, lines, computed, total, overridden } = await getTrip(actor, id);
   const requested = Number(sp.step);
   const step = Number.isInteger(requested) && requested >= 1 && requested <= 10 ? requested : Math.min(Math.max(trip.wizardStep, 1), 10);
   const savedAt = trip.updatedAt.toISOString();
@@ -47,7 +48,18 @@ export default async function PlanPage({ params, searchParams }: PageProps<"/app
   const end = toISO(trip.endDate);
   const [title, description] = COPY[step];
   const frame = (children: React.ReactNode) => (
-    <WizardFrame tripId={trip.id} code={trip.code} step={step} reached={trip.wizardStep} title={title} description={description} savedAt={savedAt} summary={step > 1 ? <TripSummaryCard trip={trip} total={total} /> : null}>
+    <WizardFrame
+      tripId={trip.id}
+      code={trip.code}
+      step={step}
+      reached={trip.wizardStep}
+      title={title}
+      description={description}
+      savedAt={savedAt}
+      attention={stepAttention(trip)}
+      summary={step > 1 ? <TripSummaryCard trip={trip} lines={lines} total={total} overridden={overridden} /> : null}
+      mobileSummary={step > 1 ? { label: <TripSummaryLabel trip={trip} total={total} />, body: <TripSummaryBody trip={trip} lines={lines} total={total} overridden={overridden} /> } : undefined}
+    >
       {children}
     </WizardFrame>
   );
@@ -103,7 +115,16 @@ export default async function PlanPage({ params, searchParams }: PageProps<"/app
           tripId={trip.id}
           segments={segmentsFor(start!, end!, trip.destinations)}
           hotels={hotels}
-          stays={trip.hotels.map((h) => ({ id: h.id, hotelId: h.hotelId, checkIn: toISO(h.checkIn)!, checkOut: toISO(h.checkOut)!, name: h.hotel.name }))}
+          stays={trip.hotels.map((h) => ({
+            id: h.id,
+            hotelId: h.hotelId,
+            checkIn: toISO(h.checkIn)!,
+            checkOut: toISO(h.checkOut)!,
+            name: h.hotel.name,
+            total: h.rooms.reduce((s, r) => s + roomLineAmount(r), 0),
+            rooms: h.rooms.map((r) => ({ roomId: r.roomId, roomName: r.roomName, quantity: r.quantity, mealPlan: r.mealPlan, nightlyRate: r.nightlyRate })),
+          }))}
+          party={Math.max(1, trip.adults + trip.children)}
         />,
       );
     }

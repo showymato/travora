@@ -34,12 +34,12 @@ Seed data is fictional (people, phone numbers and `*.example` emails) and dated 
 
 | Command | What it checks |
 | --- | --- |
-| `npm run verify` | `tsc` + ESLint + 47 Vitest tests (unit, auth, **tenant isolation**, every workflow) on `TEST_DATABASE_URL` |
+| `npm run verify` | `tsc` + ESLint + 65 Vitest tests (unit, auth, **tenant isolation**, every workflow, hotel selection & pricing) on `TEST_DATABASE_URL` |
 | `npm run e2e` | The full 30-step acceptance scenario through the real UI (admin → agency → hotel → rate → template → agent → trip → docs → send → guest page → edit Day 3 → publish), plus HTTP-level isolation checks. Needs a running app (`BASE_URL`, default `:3000`); creates uniquely named records, re-runnable. |
 | `npm run smoke [-- --mobile \| --width=1024]` | Visits all 68 routes as each role; fails on non-200, console errors or horizontal overflow. Screenshots in `screenshots/smoke`. |
 | `npm run a11y [-- --dark]` | axe-core WCAG 2.1 A/AA scan of key screens. |
 
-Last run: typecheck/lint clean · 47/47 tests · e2e 30/30 on dev **and** `next build && next start` · smoke 68/68 at 375, 390, 768, 1024 and 1440 px · axe: no violations (light and dark).
+Last run: typecheck/lint clean · 65/65 tests · e2e 30/30 · `next build` clean · smoke 68/68 at 375, 390, 768, 1024, 1280 and 1440 px · axe: no violations (light and dark), including the open hotel drawer.
 
 ## Architecture
 
@@ -64,6 +64,7 @@ tests/ scripts/        vitest suites; e2e / smoke / a11y / screenshot scripts
 - **The trip is the central object.** Hotels, rooms, transfers, activities, itinerary days/items, documents, payments, notes and versions all hang off `Trip`. Adding a transfer or hotel automatically creates/moves its itinerary item; trip dates flow into stay and room dates; moving a trip shifts everything with it.
 - **Tenant isolation is enforced on the server.** Every agency-owned row carries `agencyId` and every query filters on the `agencyId` from the authenticated session — never from request input. `/app/trips/[id]` and `/app/guests/[id]` layouts return a real 404 for another agency's ids. Tested in `tests/isolation.test.ts` and over HTTP in `scripts/e2e.mjs`.
 - **Agent pricing.** `HotelRate(roomId, agencyId)` overrides the platform base rate. Agent-facing hotel queries select only the agency's effective rate; `baseRate` and other agencies' rates never leave the server (asserted in tests). Booked rooms snapshot the rate.
+- **Choosing a stay is one atomic step.** The wizard's hotel step is scoped per destination (search, category/price/meal-plan/amenity filters, sort, details drawer with rooms). Saving calls `planStay`, which in one transaction validates hotel and rooms against the agency's assignments, recomputes every nightly rate on the server (client prices are ignored), replaces the destination's stay instead of duplicating it, and locks the trip row so double submits serialise. Discovery, estimates and quotes use the same pure helpers (`lib/hotel-search.ts`, `lib/pricing.ts`) as the server.
 - **Guest page = published snapshot.** Sending a trip stores an immutable `TripVersion` (JSON snapshot without rates, notes, ID numbers or payments). Later edits set `hasUnpublishedChanges` and stay private until the agent publishes an update (optionally emailing the guest). Every version is kept, giving full itinerary history. Share tokens are 256-bit random; links can be rotated or disabled.
 - **Itinerary generation never invents critical facts.** It builds days from hotels (real check-in/out times), transfers and activities; arrival/departure without flight details and hotel changes without transport are flagged as placeholders, which also feed the pending-action engine. Templates fill days, while real bookings replace template placeholders.
 - **AI-ready.** `ItemSource` already includes `AI_DRAFT`; an AI planner can write draft items through the same itinerary service the UI uses, and the agent reviews before publishing. No availability or booking is ever confirmed automatically.

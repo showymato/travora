@@ -30,6 +30,47 @@ export function priceLines(input: {
   return lines;
 }
 
+export type PriceGroup = PricedLine["group"];
+export const PRICE_GROUPS: PriceGroup[] = ["Hotels", "Transport", "Activities"];
+
+/** Subtotal per group (accommodation, transport, activities) for summaries. */
+export function groupTotals(lines: PricedLine[]): Record<PriceGroup, number> {
+  const out: Record<PriceGroup, number> = { Hotels: 0, Transport: 0, Activities: 0 };
+  for (const l of lines) out[l.group] += l.amount;
+  return out;
+}
+
+export type QuoteRoom = { roomId: string; quantity: number; nightlyRate: number; capacity: number; guests: number };
+
+/**
+ * Price and validate a set of room selections for one stay, before it is saved.
+ * The server recomputes the same quote from authorised rates; the client uses it
+ * for the live preview, so both always agree.
+ */
+export function stayQuote(rooms: QuoteRoom[], nights: number, party: number) {
+  const lines = rooms
+    .filter((r) => r.quantity > 0)
+    .map((r) => ({ ...r, amount: r.nightlyRate * r.quantity * nights, maxGuests: r.capacity * r.quantity }));
+  const total = lines.reduce((s, l) => s + l.amount, 0);
+  const roomCount = lines.reduce((s, l) => s + l.quantity, 0);
+  const capacity = lines.reduce((s, l) => s + l.maxGuests, 0);
+  const guests = lines.reduce((s, l) => s + l.guests, 0);
+  const problems: string[] = [];
+  for (const l of lines) if (l.guests > l.maxGuests) problems.push(`Too many guests for ${l.quantity} room${l.quantity === 1 ? "" : "s"} (max ${l.maxGuests}).`);
+  return { lines, total, roomCount, capacity, guests, problems, fitsParty: capacity >= party, perNight: nights ? Math.round(total / nights) : 0 };
+}
+
+/** Spread the party across selected rooms, filling each up to its capacity. */
+export function distributeGuests(rooms: { capacity: number; quantity: number }[], party: number) {
+  let left = party;
+  return rooms.map((r) => {
+    if (r.quantity <= 0) return 0;
+    const take = Math.max(r.quantity > 0 ? 1 : 0, Math.min(left, r.capacity * r.quantity));
+    left = Math.max(0, left - take);
+    return take;
+  });
+}
+
 export function tripTotals(lines: PricedLine[], priceOverride: number | null) {
   const computed = lines.reduce((s, l) => s + l.amount, 0);
   return { computed, total: priceOverride ?? computed, overridden: priceOverride !== null };

@@ -4,7 +4,7 @@ import { db } from "../db";
 import { audit } from "../audit";
 import { AppError, notFound } from "../errors";
 import type { Actor } from "../auth/session";
-import { activitySchema, nul, stayCreateSchema, stayRoomSchema, stayUpdateSchema, transportSchema } from "@/lib/schemas";
+import { activitySchema, nul, stayCreateSchema, stayPlanSchema, stayRoomSchema, stayUpdateSchema, transportSchema } from "@/lib/schemas";
 import { toDate, toISO } from "@/lib/dates";
 import { ACTIVITY_KIND_LABEL, TRANSPORT_KIND_LABEL, type ActivityKindValue, type TransportKindValue } from "@/lib/labels";
 import { effectiveRate } from "../hotels";
@@ -43,6 +43,94 @@ export async function addStay(actor: Actor | null, tripId: string, raw: unknown)
     await touch(tx, tripId);
     await audit(actor, { action: "trip.hotel_added", entity: "Trip", entityId: tripId, summary: `Added ${hotel.name} (${input.checkIn} → ${input.checkOut})` }, tx);
     return stay;
+  });
+}
+
+/**
+ * Set a hotel and its exact room selection for one stay, atomically.
+ *
+ * - `stayId` given: that stay is edited in place, or replaced if the hotel changed.
+ * - `stayId` null: an existing stay at the same hotel overlapping these dates is
+ *   reused, so a retried or double-clicked request never creates a duplicate.
+ *
+ * Rooms are replaced with exactly the requested set. Nightly rates come from the
+ * agency's authorised rate (rates already booked for an unchanged room type are
+ * kept), and the trip row is locked so concurrent requests serialise.
+ */
+export async function planStay(actor: Actor | null, tripId: string, raw: unknown) {
+  guard(actor);
+  const input = stayPlanSchema.parse(raw);
+  const trip = await ownTrip(actor.agencyId, tripId);
+  assertWithinTrip(trip, input.checkIn, input.checkOut);
+  const hotel = await db.hotel.findFirst({ where: { id: input.hotelId, status: "ACTIVE", agencies: { some: { agencyId: actor.agencyId } } }, select: { id: true, name: true } });
+  if (!hotel) throw new AppError("FORBIDDEN", "That hotel isn't available to your agency.");
+
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT id FROM "Trip" WHERE id = ${tripId} FOR UPDATE`;
+    const priced = [];
+    for (const r of input.rooms) {
+      const room = await effectiveRate(actor.agencyId, r.roomId, tx);
+      if (room.hotelId !== hotel.id || room.status !== "ACTIVE") throw new AppError("VALIDATION_ERROR", "That room type isn't available at this hotel.");
+      if (!room.mealPlans.includes(r.mealPlan as MealPlan)) throw new AppError("VALIDATION_ERROR", `${room.name} isn't offered with that meal plan.`);
+      if (r.guests > room.capacity * r.quantity) throw new AppError("VALIDATION_ERROR", `${room.name} holds up to ${room.capacity * r.quantity} guests in ${r.quantity} room${r.quantity === 1 ? "" : "s"}.`);
+      priced.push({ ...r, name: room.name, rate: room.rate });
+    }
+
+    let existing = input.stayId
+      ? await tx.tripHotel.findFirst({ where: { id: input.stayId, tripId, agencyId: actor.agencyId }, include: { rooms: true, hotel: hotelSelect } })
+      : await tx.tripHotel.findFirst({
+          where: { tripId, agencyId: actor.agencyId, hotelId: hotel.id, checkIn: { lt: toDate(input.checkOut) }, checkOut: { gt: toDate(input.checkIn) } },
+          include: { rooms: true, hotel: hotelSelect },
+        });
+    if (input.stayId && !existing) throw notFound("Hotel stay");
+
+    let replaced: string | null = null;
+    if (existing && existing.hotelId !== hotel.id) {
+      // Replacing the hotel: drop the old stay (and its itinerary items) first.
+      replaced = existing.hotel.name;
+      await syncStay(tx, { id: existing.id, tripId, removed: true });
+      await tx.tripHotel.delete({ where: { id: existing.id } });
+      existing = null;
+    }
+
+    const keptRates = new Map((existing?.rooms ?? []).map((r) => [r.roomId, r.nightlyRate]));
+    const stay = existing
+      ? await tx.tripHotel.update({ where: { id: existing.id }, data: { checkIn: toDate(input.checkIn), checkOut: toDate(input.checkOut) }, include: { hotel: hotelSelect } })
+      : await tx.tripHotel.create({
+          data: { tripId, agencyId: actor.agencyId, hotelId: hotel.id, checkIn: toDate(input.checkIn), checkOut: toDate(input.checkOut), position: await tx.tripHotel.count({ where: { tripId } }) },
+          include: { hotel: hotelSelect },
+        });
+    await tx.tripRoom.deleteMany({ where: { tripHotelId: stay.id } });
+    await tx.tripRoom.createMany({
+      data: priced.map((r) => ({
+        tripId,
+        agencyId: actor.agencyId,
+        tripHotelId: stay.id,
+        roomId: r.roomId,
+        roomName: r.name,
+        nightlyRate: keptRates.get(r.roomId) ?? r.rate,
+        quantity: r.quantity,
+        guests: r.guests,
+        mealPlan: r.mealPlan,
+        checkIn: toDate(input.checkIn),
+        checkOut: toDate(input.checkOut),
+      })),
+    });
+    await syncStay(tx, stay);
+    await tx.trip.update({ where: { id: tripId }, data: { wizardStep: Math.max(trip.wizardStep, 5) } });
+    await touch(tx, tripId);
+    const rooms = priced.map((r) => `${r.quantity} × ${r.name} (${r.mealPlan})`).join(", ");
+    await audit(
+      actor,
+      {
+        action: existing ? "trip.hotel_updated" : "trip.hotel_added",
+        entity: "Trip",
+        entityId: tripId,
+        summary: `${replaced ? `Replaced ${replaced} with` : existing ? "Updated" : "Added"} ${hotel.name} (${input.checkIn} → ${input.checkOut}): ${rooms}`,
+      },
+      tx,
+    );
+    return { stayId: stay.id, replaced: Boolean(replaced), created: !existing };
   });
 }
 

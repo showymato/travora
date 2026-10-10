@@ -48,6 +48,9 @@ export async function deleteTripNoteAction(noteId: string) {
 export async function addStayAction(tripId: string, input: unknown) {
   return runAction(async () => (await lines.addStay(await getActor(), tripId, input)).id, "Hotel added to trip.");
 }
+export async function planStayAction(tripId: string, input: unknown) {
+  return runAction(async () => lines.planStay(await getActor(), tripId, input));
+}
 export async function updateStayAction(stayId: string, input: unknown) {
   return runAction(async () => lines.updateStay(await getActor(), stayId, input), "Stay updated.");
 }

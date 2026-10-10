@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Car, Mountain, Plus, Sparkles } from "lucide-react";
+import { CalendarRange, Car, Mountain, Plus, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/app/states";
 import { ActivityDialog, TransportDialog, blankActivity, blankTransport } from "@/components/trips/line-forms";
@@ -11,6 +11,8 @@ import { ItineraryBuilder, builderKey } from "@/components/trips/itinerary-build
 import { addDays, fmtDow, nightsBetween, toISO } from "@/lib/dates";
 import type { TransportInput } from "@/lib/schemas";
 import type { TripFull } from "@/server/trips/queries";
+import { useAction } from "@/lib/use-action";
+import { createDaysAction } from "@/server/actions/trips";
 import { WizardFooter, stepHref } from "./frame";
 
 /**
@@ -151,20 +153,75 @@ export function ActivitiesStep({ tripId, trip }: { tripId: string; trip: TripFul
 export function ItineraryStep({ tripId, trip, templates }: { tripId: string; trip: TripFull; templates: TemplateOption[] }) {
   const router = useRouter();
   const nights = nightsBetween(toISO(trip.startDate), toISO(trip.endDate));
-  const hasItems = trip.days.some((d) => d.items.length);
+  const items = trip.days.flatMap((d) => d.items);
+  const hasItems = items.length > 0;
+  const gaps = items.filter((i) => i.notes && /^(Add flight|Transport not)/.test(i.notes)).length;
+  const createDays = useAction(() => createDaysAction(tripId), { success: "Days created — add items to each one." });
+  const nightStay: Record<string, string> = {};
+  for (const h of trip.hotels) {
+    for (let d = toISO(h.checkIn)!; d < toISO(h.checkOut)!; d = addDays(d, 1)) nightStay[d] = h.hotel.name;
+  }
+  const sources = [
+    `${nights + 1} day${nights === 0 ? "" : "s"}`,
+    `${trip.destinations.length} destination${trip.destinations.length === 1 ? "" : "s"}`,
+    `${trip.hotels.length} hotel stay${trip.hotels.length === 1 ? "" : "s"}`,
+    `${trip.transports.length} transfer${trip.transports.length === 1 ? "" : "s"}`,
+    `${trip.activities.length} activit${trip.activities.length === 1 ? "y" : "ies"}`,
+  ];
+
+  if (!hasItems) {
+    return (
+      <>
+        <section className="rounded-xl border bg-card px-5 py-8 text-center sm:px-10 sm:py-10">
+          <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <CalendarRange className="size-5" aria-hidden />
+          </span>
+          <h2 className="mt-4 text-[18px] font-semibold tracking-[-0.01em]">Build your itinerary</h2>
+          <p className="mx-auto mt-1.5 max-w-md text-[13.5px] text-muted-foreground">Create your day-by-day schedule from selected hotels, transfers and activities, or start from a template. Everything stays editable.</p>
+          <p className="mt-3 text-[12.5px] text-muted-foreground">Uses {sources.join(" · ")}</p>
+          <div className="mt-6 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center">
+            <ItineraryActions tripId={tripId} templates={templates} hasItems={false} nights={nights} />
+            {trip.days.length ? null : (
+              <Button variant="ghost" disabled={createDays.pending} onClick={() => createDays.run()}>
+                <Plus className="size-4" aria-hidden /> Add items manually
+              </Button>
+            )}
+          </div>
+          <p className="mx-auto mt-5 max-w-md text-[12px] text-muted-foreground">Nothing is invented: arrivals without flight details and hotel changes without transport are added as clearly marked placeholders for you to complete.</p>
+        </section>
+        {trip.days.length ? (
+          <div className="mt-6">
+            <ItineraryBuilder key={builderKey(trip.days)} tripId={tripId} days={trip.days} nightStay={nightStay} />
+          </div>
+        ) : null}
+        <WizardFooter back={stepHref(tripId, 7)} onContinue={() => router.push(stepHref(tripId, 9))} continueLabel="Review trip" />
+      </>
+    );
+  }
+
   return (
     <>
       <div className="mb-5 flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-[13.5px] text-muted-foreground">
-          {hasItems ? "Drag items to reorder or move them between days. Every change is saved." : "Build a day-by-day skeleton from your hotels, transfers and activities — or start from a template."}
-        </p>
-        <ItineraryActions tripId={tripId} templates={templates} hasItems={hasItems} nights={nights} />
+        <div className="min-w-0">
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
+            <span className="font-medium tabular">
+              {trip.days.length} days · {items.length} item{items.length === 1 ? "" : "s"}
+            </span>
+            {gaps ? (
+              <span className="inline-flex items-center gap-1.5 text-warn">
+                <span className="size-1.5 rounded-full bg-warn" aria-hidden /> {gaps} placeholder{gaps === 1 ? "" : "s"} to complete
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-ok">
+                <span className="size-1.5 rounded-full bg-ok" aria-hidden /> No missing details
+              </span>
+            )}
+          </p>
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">Drag items to reorder or move them between days. Every change is saved.</p>
+        </div>
+        <ItineraryActions tripId={tripId} templates={templates} hasItems nights={nights} />
       </div>
-      {trip.days.length ? (
-        <ItineraryBuilder key={builderKey(trip.days)} tripId={tripId} days={trip.days} />
-      ) : (
-        <EmptyState title="No itinerary yet" description="Generate one to get a timeline for every day of the trip. Nothing is invented: flights and missing transfers are marked for you to fill in." />
-      )}
+      <ItineraryBuilder key={builderKey(trip.days)} tripId={tripId} days={trip.days} nightStay={nightStay} />
       <WizardFooter back={stepHref(tripId, 7)} onContinue={() => router.push(stepHref(tripId, 9))} continueLabel="Review trip" />
     </>
   );
